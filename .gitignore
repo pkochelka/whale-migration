@@ -1,0 +1,8 @@
+# The dataset (~3 GB, and some licenses forbid redistribution, e.g. WDPA) is rebuilt by the
+# pipeline and never committed. results/ and figures/ are small and are committed.
+data/
+.venv/
+__pycache__/
+*.pyc
+*.duckdb
+*.duckdb.wal

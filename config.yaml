@@ -1,0 +1,187 @@
+# Whale data pipeline configuration.
+# Every stage reads this file; override path with `python -m pipeline --config other.yaml ...`.
+
+paths:
+  raw: data/raw            # cached downloads, never edited
+  interim: data/interim    # per-source cleaned tables (unified schema) + cleaning reports
+  processed: data/processed
+
+# Target taxa. `aphia_id` is a fallback; the live value is resolved via WoRMS and cached.
+species:
+  - scientific: Megaptera novaeangliae
+    common: Humpback whale
+    aphia_id: 137092
+  - scientific: Physeter macrocephalus
+    common: Sperm whale
+    aphia_id: 137119
+  - scientific: Balaenoptera musculus
+    common: Blue whale
+    aphia_id: 137090
+  - scientific: Balaenoptera physalus
+    common: Fin whale
+    aphia_id: 137091
+  - scientific: Eubalaena glacialis
+    common: North Atlantic right whale
+    aphia_id: 159023
+  - scientific: Eubalaena australis
+    common: Southern right whale
+    aphia_id: 220222
+
+taxonomy:
+  # Names that only resolve to a rank above species: "drop" (default) or "keep" (stored with
+  # species_scientific = the higher taxon, e.g. "Eubalaena").
+  higher_taxa: drop
+  # Roll subspecies (e.g. B. musculus brevicauda) up to species.
+  rollup_subspecies: true
+  # Raw name -> name to resolve instead. Needed for WoRMS homonyms whose authors point to
+  # different accepted species (the resolver refuses to guess and logs them as ambiguous).
+  overrides:
+    Balaena glacialis: Eubalaena glacialis   # Bonnaterre 1789 / Borowski 1781 usage
+
+licenses:
+  # Some contributors (e.g. individual Happywhale photographers) mark records "Copyright X. No use
+  # without permission." They are always flagged `license_all_rights_reserved`; set true to exclude
+  # them entirely (recommended before publishing visualisations).
+  drop_all_rights_reserved: true   # records marked "No use without permission" are excluded
+
+http:
+  user_agent: "whale-pipeline/0.1 (research; contact via repository)"
+  timeout_s: 120
+  retries: 5
+  backoff_s: 5
+  min_interval_s: 0.5      # polite delay between calls to the same host
+
+geo:
+  land_mask: naturalearth_10m      # Natural Earth 1:10m land polygons
+  # A point on land is only dropped if it lies further inland than this (or than its stated
+  # coordinate uncertainty, whichever is larger). Closer points are kept and flagged, because
+  # coastal sightings with generalised coordinates routinely fall just onshore.
+  land_tolerance_km: 5
+  drop_null_island: true           # (0, 0)
+
+dedup:
+  # Exact pass: same species + same original occurrenceID + same day + within this distance.
+  exact_max_km: 25
+  # Fuzzy pass (only between different sources): same species, same day, within distance.
+  fuzzy_max_km: 2.0
+  # Tie-break order when detail scores are equal.
+  source_priority: [seamap, movebank, obis, gbif, whalinghistory]
+
+sources:
+  whalinghistory:
+    enabled: true
+    url: https://whalinghistory.org/aowl/AmericanOffshoreWhalingLogbookData.zip
+    license: CC-BY-4.0
+    citation: >-
+      American Offshore Whaling Logbook Data, https://whalinghistory.org, New Bedford Whaling
+      Museum, Nantucket Historical Association, and Mystic Seaport Museum, Inc.
+    # Logbook vernacular names -> scientific names. "Right" is resolved geographically.
+    species_map:
+      Sperm: Physeter macrocephalus
+      Humpback: Megaptera novaeangliae
+      Blue: Balaenoptera musculus
+      Finback: Balaenoptera physalus
+      Right: "@right_whale_by_region"
+      Bowhead: Balaena mysticetus
+      Gray: Eschrichtius robustus
+      Whale: Cetacea              # vague -> higher taxon
+      Pilot: Globicephala
+      Blackfish: Globicephala
+      Killer: Orcinus orca
+      Killers: Orcinus orca
+      Grampus: Grampus griseus    # whalers' "grampus" is uncertain; non-target either way
+      Dolphin: Delphinidae
+      Porpoise: Phocoenidae
+    # Max plausible sailing-ship daily run; a fix requiring a faster leg in AND out is an outlier.
+    max_speed_km_per_day: 450
+
+  obis:
+    enabled: true
+    api: https://api.obis.org/v3
+    # Year windows per request batch (cache granularity).
+    window_years: 10
+    start_year: 1700
+    max_records_per_species: null   # e.g. 5000 for a quick dev run
+
+  gbif:
+    enabled: true
+    api: https://api.gbif.org/v1
+    # If GBIF_USERNAME / GBIF_PASSWORD / GBIF_EMAIL are set, the asynchronous download API is
+    # used (recommended for >100k records). Otherwise the search API is paged in partitions.
+    partition_max: 9000             # search API pages slow to >2 min beyond offset ~10k
+    page_size: 300
+    exclude_basis_of_record: [FOSSIL_SPECIMEN, LIVING_SPECIMEN]
+    max_records_per_species: null
+
+  seamap:
+    enabled: true
+    ipt: https://ipt.env.duke.edu
+    # Only Happywhale photo-ID datasets whose title mentions one of these common names; rows are
+    # filtered again by scientific name after download.
+    title_prefix: "Happywhale - "
+    title_keywords: [humpback whale, sperm whale, blue whale, fin whale, right whale]
+    extra_dataset_ids: []          # other SEAMAP/IPT resource ids, e.g. ["zd_1234"]
+
+  movebank:
+    enabled: true
+    api: https://www.movebank.org/movebank/service/direct-read
+    # Credentials are read from env vars MOVEBANK_USERNAME / MOVEBANK_PASSWORD only.
+    argos_keep_classes: ["3", "2", "1", "G"]   # drop 0, A, B, Z
+    max_speed_km_per_h: 15
+
+environment:
+  sst:
+    enabled: true
+    server: https://coastwatch.pfeg.noaa.gov/erddap
+    dataset_id: erdHadISST
+    variable: sst
+    start: "1870-01-01"
+    end: null                      # null = latest
+    stride: 1                      # native 1 degree
+    license: "Crown copyright (Met Office Hadley Centre); academic research use only, per dataset metadata"
+    citation: >-
+      Rayner, N. A. et al. (2003), Global analyses of sea surface temperature, sea ice, and night
+      marine air temperature since the late nineteenth century, J. Geophys. Res. 108(D14), 4407.
+  chlorophyll:
+    enabled: true
+    server: https://coastwatch.pfeg.noaa.gov/erddap
+    dataset_id: pmlEsaCCI60OceanColorMonthly
+    variable: chlor_a
+    start: "1997-09-01"
+    end: null
+    stride: 12                     # 1/24 deg native -> sampled every 0.5 deg ...
+    coarsen: 2                     # ... then block-averaged 2x2 -> 1 deg (nan-aware)
+    license: "ESA CCI free and open access"
+    citation: >-
+      Sathyendranath, S. et al. ESA Ocean Colour Climate Change Initiative (Ocean_Colour_cci):
+      Monthly global chlorophyll-a, version 6.0. NERC EDS Centre for Environmental Data Analysis.
+  sea_ice:
+    enabled: true
+    base: https://noaadata.apps.nsidc.org/NOAA
+    concentration_files:
+      north: G02202_V6/north/aggregate/sic_psn25_197811-202609_v06r00.nc
+      south: G02202_V6/south/aggregate/sic_pss25_197811-202609_v06r00.nc
+    extent_dir: G02135/{hemi}/monthly/data/{H}_{mm}_extent_v4.0.csv
+    license: "No constraints on data access or use (NSIDC); cite as below"
+    citation: >-
+      Meier, W. N. et al. NOAA/NSIDC Climate Data Record of Passive Microwave Sea Ice
+      Concentration, Version 6 (G02202). NSIDC. Fetterer, F. et al. Sea Ice Index, Version 4 (G02135).
+  mpa:
+    enabled: true
+    # {MonYYYY} is filled with the current month, falling back to previous months.
+    url: https://d1gam3xoknrgr2.cloudfront.net/current/WDPA_WDOECM_{MonYYYY}_Public_marine_shp.zip
+    simplify_deg: 0.01
+    license: "UNEP-WCMC & IUCN WDPA terms: non-commercial use, no redistribution of data"
+    citation: >-
+      UNEP-WCMC and IUCN (2026), Protected Planet: The World Database on Protected Areas (WDPA)
+      and World Database on Other Effective Area-based Conservation Measures (WD-OECM),
+      Cambridge, UK. www.protectedplanet.net.
+  shipping:
+    enabled: true
+    url: https://datacatalogfiles.worldbank.org/ddh-published/0037580/DR0045406/shipdensity_global.zip
+    target_resolution_deg: 0.1
+    license: CC-BY-4.0
+    citation: >-
+      Cerdeiro, D. A., Komaromi, A., Liu, Y. and Saeed, M. (2020). World Seaborne Trade in Real
+      Time: A Proof of Concept for Building AIS-based Nowcasts from Scratch. IMF Working Paper
+      WP/20/57. Global Shipping Traffic Density, World Bank Data Catalog.
