@@ -16,10 +16,10 @@ dependencies = [
     "pyworms>=0.2",
     "erddapy>=2.2",
     "xarray>=2024.1",
-    "netcdf4>=1.6",
+    "netcdf4>=1.6,<1.7.5",  # 1.7.5 only ships macOS 15 wheels
     "numpy>=1.26",
     "scipy>=1.17.1",
-    "rasterio>=1.4.4",
+    "rasterio>=1.4.4,<1.5.2",  # 1.5.2 only ships macOS 15 wheels
     "networkx>=3.6.1",
     "matplotlib>=3.11.2",
 ]
