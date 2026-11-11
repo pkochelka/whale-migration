@@ -11,6 +11,7 @@ import json
 import logging
 
 from ..http import write_manifest
+from ..parallel import pmap
 
 log = logging.getLogger(__name__)
 
@@ -37,11 +38,14 @@ def fetch(cfg, http, force: bool = False, name: str = "seamap") -> None:
     (d / "inventory.json").write_text(json.dumps(inv, indent=1), encoding="utf-8")
     sel = select_resources(inv, sc)
     log.info("SEAMAP/IPT: %d of %d resources selected", len(sel), len(inv))
-    for r in sel:
+
+    def one(r):
         dest = d / f"{r['resource']}_{r.get('lastPublished', 'na')}.zip"
         http.download(r["dwca"], dest, force=force,
                       meta={"title": r["title"], "gbifKey": r.get("gbifKey"), "records": r.get("records"),
                             "eml": r.get("eml"), "lastPublished": r.get("lastPublished")})
+
+    pmap(one, sel, int(sc.get("workers", 1)))
     write_manifest(d / "manifest.json", source="OBIS-SEAMAP via Duke IPT", ipt=sc["ipt"],
                    selected=[{k: r.get(k) for k in ("resource", "title", "records", "gbifKey", "lastPublished")}
                              for r in sel])

@@ -43,7 +43,12 @@ uv run python -m pipeline viz             # redraw figures/*.png
 ```
 
 Each stage can also be run alone, for one source: `python -m pipeline fetch obis`,
-`python -m pipeline clean obis`, `python -m pipeline status`. Downloads are cached.
+`python -m pipeline clean obis`, `python -m pipeline status`.
+
+Fetching is incremental: a re-run only downloads what is missing, resumes interrupted downloads,
+and skips files that another running fetch is still downloading (re-run once it is done).
+Sources are fetched in parallel; `http.parallel_sources` and each source's `workers` in
+`config.yaml` set how much (1 = one after another).
 
 ## How it fits together
 
@@ -68,6 +73,8 @@ fetch → clean → unify → analyze → viz
 - [docs/DATA.md](docs/DATA.md): output files, every column, every cleaning rule
 - [docs/DATA_SUMMARY.md](docs/DATA_SUMMARY.md): record counts per source, species and decade
 - [docs/SOURCES.md](docs/SOURCES.md): licenses and citations
+- [showcase/REPORT.md](showcase/REPORT.md): fourteen example visualizations of the dataset, each explained
+  (`python -m pipeline analyze showcase`, then `viz`)
 
 ## Data sources and licenses
 

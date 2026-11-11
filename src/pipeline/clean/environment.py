@@ -124,10 +124,11 @@ def _bin_polar(path: Path, res: float = 1.0) -> xr.DataArray:
 
 
 def clean_sea_ice(cfg) -> None:
+    from ..fetch.nsidc import local_aggregate  # file names change monthly; fetch knows the pattern
     sc = cfg.source("sea_ice")
     d = cfg.raw / "nsidc"
-    files = [d / Path(rel).name for rel in sc["concentration_files"].values()]
-    if not all(f.exists() for f in files):
+    files = [local_aggregate(d, hemi) for hemi in ("north", "south")]
+    if not all(files):
         raise SourceUnavailable("NSIDC files missing; run `python -m pipeline fetch sea_ice`")
     grids = [_bin_polar(f) for f in files]
     # Hemispheres do not overlap (north grid >= ~31N, south <= ~-39S): combine.

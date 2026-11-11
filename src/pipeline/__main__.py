@@ -8,6 +8,7 @@
     python -m pipeline run                   # fetch all -> clean all -> unify -> docs
     python -m pipeline status                # what is cached / built
     python -m pipeline analyze social        # analyses -> results/*.json
+    python -m pipeline analyze showcase      # showcase aggregates -> showcase/results/showcase.json
     python -m pipeline viz                   # analyses -> figures/*.png
 
 Every stage is idempotent: cached downloads are reused unless --force is given, and clean/unify
@@ -21,7 +22,8 @@ import sys
 import time
 
 from .config import load_config
-from .http import HttpClient
+from .http import DownloadInProgress, HttpClient
+from .parallel import pmap
 
 log = logging.getLogger("pipeline")
 
@@ -36,17 +38,26 @@ def _targets(which: str, allowed: list[str], cfg) -> list[str]:
 
 def cmd_fetch(cfg, which: str, force: bool) -> int:
     from . import fetch
-    http = HttpClient(cfg["http"])
-    failures = []
-    for name in _targets(which, fetch.ALL, cfg):
+
+    def one(name: str) -> str | None:
+        """Fetch one source; return its name if it failed."""
+        http = HttpClient(cfg["http"])  # own session per source; the per-host throttle is shared
         t = time.time()
         log.info("== fetch %s", name)
         try:
             fetch.get(name).fetch(cfg, http, force=force, name=name)
             log.info("== fetch %s done in %.0fs", name, time.time() - t)
+            return None
+        except DownloadInProgress as e:  # another run has it; its finished files are reused later
+            log.warning("fetch %s incomplete: %s", name, e)
+            return name
         except Exception as e:  # stub, log and continue with the other sources
             log.exception("fetch %s FAILED: %s", name, e)
-            failures.append(name)
+            return name
+
+    # Sources live on different servers, so they are fetched side by side.
+    workers = int(cfg["http"].get("parallel_sources", 1))
+    failures = [n for n in pmap(one, _targets(which, fetch.ALL, cfg), workers) if n]
     if failures:
         log.error("failed sources: %s", ", ".join(failures))
     return 1 if failures and which != "all" else 0
@@ -82,8 +93,8 @@ def cmd_docs(cfg) -> int:
 
 
 def cmd_analyze(cfg, which: str) -> int:
-    from .analysis import climate, social
-    todo = {"social": social, "climate": climate}
+    from .analysis import climate, showcase, social
+    todo = {"social": social, "climate": climate, "showcase": showcase}
     for name in (todo if which == "all" else [which]):
         log.info("== analyze %s", name)
         todo[name].run(cfg)
@@ -121,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--force", action="store_true")
     sub.add_parser("status")
     an = sub.add_parser("analyze")
-    an.add_argument("analysis", nargs="?", default="all", choices=["all", "social", "climate"])
+    an.add_argument("analysis", nargs="?", default="all", choices=["all", "social", "climate", "showcase"])
     sub.add_parser("viz")
     a = p.parse_args(argv)
 

@@ -17,7 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
+from ..cache import parquet_done, write_parquet, write_text
 from ..http import HttpClient, write_manifest
+from ..parallel import pmap
 from ..util import slug
 
 log = logging.getLogger(__name__)
@@ -107,14 +109,17 @@ def fetch(cfg, http, force: bool = False, name: str = "gbif") -> None:
         log.info("GBIF credentials found: using the download API")
     else:
         log.info("no GBIF credentials: paging the search API (set GBIF_USERNAME/PASSWORD/EMAIL to use downloads)")
-    for sp in cfg.species_names:
-        key = taxon_key(gh, api, sp)
-        d = root / slug(sp)
-        d.mkdir(exist_ok=True)
-        if creds:
-            _download_api(cfg, key, sp, d, creds, force)
-        else:
-            _search_api(gh, api, sc, key, sp, d, force)
+    keys = {sp: taxon_key(gh, api, sp) for sp in cfg.species_names}
+    for sp in keys:
+        (root / slug(sp)).mkdir(exist_ok=True)
+    if creds:
+        # GBIF spends minutes preparing each download: request several at once rather than wait
+        # for each in turn. GBIF refuses more than a few simultaneous downloads per user.
+        pmap(lambda sp: _download_api(cfg, keys[sp], sp, root / slug(sp), creds, force), keys,
+             int(sc.get("download_workers", 3)))
+    else:
+        for sp, key in keys.items():  # one species at a time: GBIF rate-limits parallel pagers
+            _search_api(gh, api, sc, key, sp, root / slug(sp), force)
     _fetch_datasets(cfg, gh, force)
 
 
@@ -170,18 +175,30 @@ def _search_api(http, api, sc, key, sp, d, force) -> None:
     cap = sc.get("max_records_per_species")
     limit = min(int(sc.get("partition_max", 9000)), 10_000)
     log.info("GBIF %s (taxonKey %s): %d records", sp, key, total)
-    got = 0
-    for params, label, n in partitions(http, api, base, limit):
+    # The plan is saved on the first run and reused, so a re-run looks for the same files (record
+    # counts drift, and a fresh plan would cut different, overlapping pieces). --force re-plans.
+    plan_path = d / "partitions.json"
+    if plan_path.exists() and not force:
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        log.info("GBIF %s: reusing saved plan of %d partitions", sp, len(plan))
+    else:
+        plan = list(partitions(http, api, base, limit))
+        write_text(plan_path, json.dumps(plan, indent=1))
+    todo, got = [], 0
+    for params, label, n in plan:
+        if not force and parquet_done(d / f"{label}.parquet"):
+            got += n  # already on disk
+        else:
+            todo.append((params, label, n))
+    log.info("GBIF %s: %d of %d partitions to fetch", sp, len(todo), len(plan))
+    for params, label, n in todo:
         if cap and got >= cap:
             break
         out = d / f"{label}.parquet"
-        if out.exists() and not force:
-            got += n
-            continue
         n = min(n, cap - got) if cap else n
         log.info("GBIF %s %s: %d", sp, label, n)
         df = _page_all(http, api, params, n, int(sc.get("page_size", 300)))
-        df.to_parquet(out)
+        write_parquet(df, out)
         got += len(df)
     write_manifest(d / "manifest.json", source="GBIF search API", taxonKey=key, query=base,
                    total_reported=total, total_fetched=got,
@@ -193,20 +210,34 @@ def _download_api(cfg, key, sp, d, creds, force) -> None:
     out = d / "download.zip"
     if out.exists() and not force:
         return
-    user, pwd, email = creds
-    res = occ.download([f"taxonKey = {key}", "hasCoordinate = TRUE"], format="SIMPLE_CSV",
-                       user=user, pwd=pwd, email=email)
-    dl_key = res[0]
-    log.info("GBIF download %s requested for %s", dl_key, sp)
-    while True:
-        meta = occ.download_meta(dl_key)
-        if meta["status"] in ("SUCCEEDED", "FAILED", "KILLED", "CANCELLED"):
-            break
-        time.sleep(30)
+    # The key of a requested download is kept until it is fetched: an interrupted run picks the
+    # same download up again instead of asking GBIF to prepare a new one.
+    pending = d / "download.pending"
+    if pending.exists() and not force:
+        dl_key = pending.read_text(encoding="utf-8").strip()
+        log.info("GBIF download %s for %s was requested earlier; waiting for it", dl_key, sp)
+    else:
+        user, pwd, email = creds
+        res = occ.download([f"taxonKey = {key}", "hasCoordinate = TRUE"], format="SIMPLE_CSV",
+                           user=user, pwd=pwd, email=email)
+        dl_key = res[0]
+        write_text(pending, dl_key)
+        log.info("GBIF download %s requested for %s", dl_key, sp)
+    try:
+        while True:
+            meta = occ.download_meta(dl_key)
+            if meta["status"] in ("SUCCEEDED", "FAILED", "KILLED", "CANCELLED"):
+                break
+            time.sleep(30)
+    except Exception:
+        pending.unlink(missing_ok=True)  # unknown or expired key: request a new one next time
+        raise
     if meta["status"] != "SUCCEEDED":
+        pending.unlink(missing_ok=True)
         raise RuntimeError(f"GBIF download {dl_key} {meta['status']}")
     occ.download_get(dl_key, path=str(d))
     (d / f"{dl_key}.zip").replace(out)
+    pending.unlink(missing_ok=True)
     write_manifest(d / "manifest.json", source="GBIF download API", taxonKey=key,
                    download_key=dl_key, doi=meta.get("doi"), total_reported=meta.get("totalRecords"),
                    citation=f"GBIF.org ({meta.get('created', '')[:10]}) GBIF Occurrence Download "

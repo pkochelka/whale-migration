@@ -13,6 +13,7 @@ import os
 
 import pandas as pd
 
+from ..cache import write_text
 from ..http import write_manifest
 
 log = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ def fetch(cfg, http, force: bool = False, name: str = "movebank") -> None:
         if is_license_prompt(ev.text):
             skipped.append({"id": sid, "name": s.get("name"), "reason": "license terms must be accepted"})
             continue
-        out.write_text(ev.text, encoding="utf-8")
+        write_text(out, ev.text)
         fetched.append(sid)
     write_manifest(d / "manifest.json", source="Movebank", fetched=fetched, skipped=skipped,
                    studies_meta="studies.csv")

@@ -50,6 +50,10 @@ http:
   retries: 5
   backoff_s: 5
   min_interval_s: 0.5      # polite delay between calls to the same host
+  # Parallelism. Sources are fetched side by side (they live on different servers), and some
+  # sources also set `workers` below. min_interval_s still holds per host across all threads, so
+  # workers overlap waiting, they never raise the request rate. 1 = one after another.
+  parallel_sources: 4
 
 geo:
   land_mask: naturalearth_10m      # Natural Earth 1:10m land polygons
@@ -102,6 +106,7 @@ sources:
     window_years: 10
     start_year: 1700
     max_records_per_species: null   # e.g. 5000 for a quick dev run
+    workers: 3                      # species fetched at once (pyobis is not throttled: keep small)
 
   gbif:
     enabled: true
@@ -112,6 +117,9 @@ sources:
     page_size: 300
     exclude_basis_of_record: [FOSSIL_SPECIMEN, LIVING_SPECIMEN]
     max_records_per_species: null
+    # Download API only; the search API is always paged one request at a time (GBIF answers
+    # parallel pagers with 429). GBIF refuses more than a few simultaneous downloads per user.
+    download_workers: 3
 
   seamap:
     enabled: true
@@ -121,6 +129,7 @@ sources:
     title_prefix: "Happywhale - "
     title_keywords: [humpback whale, sperm whale, blue whale, fin whale, right whale]
     extra_dataset_ids: []          # other SEAMAP/IPT resource ids, e.g. ["zd_1234"]
+    workers: 3                     # archives downloaded at once
 
   movebank:
     enabled: true
@@ -138,6 +147,7 @@ environment:
     start: "1870-01-01"
     end: null                      # null = latest
     stride: 1                      # native 1 degree
+    workers: 2                     # years downloaded at once (shares the server with chlorophyll)
     license: "Crown copyright (Met Office Hadley Centre); academic research use only, per dataset metadata"
     citation: >-
       Rayner, N. A. et al. (2003), Global analyses of sea surface temperature, sea ice, and night
@@ -151,6 +161,7 @@ environment:
     end: null
     stride: 12                     # 1/24 deg native -> sampled every 0.5 deg ...
     coarsen: 2                     # ... then block-averaged 2x2 -> 1 deg (nan-aware)
+    workers: 2                     # years downloaded at once
     license: "ESA CCI free and open access"
     citation: >-
       Sathyendranath, S. et al. ESA Ocean Colour Climate Change Initiative (Ocean_Colour_cci):
@@ -158,10 +169,13 @@ environment:
   sea_ice:
     enabled: true
     base: https://noaadata.apps.nsidc.org/NOAA
-    concentration_files:
-      north: G02202_V6/north/aggregate/sic_psn25_197811-202609_v06r00.nc
-      south: G02202_V6/south/aggregate/sic_pss25_197811-202609_v06r00.nc
+    # Folders holding the monthly concentration aggregates. NSIDC renames the file every month
+    # (sic_psn25_197811-<latest yyyymm>_v06r00.nc), so fetch picks the newest one from the listing.
+    concentration_dirs:
+      north: G02202_V6/north/aggregate
+      south: G02202_V6/south/aggregate
     extent_dir: G02135/{hemi}/monthly/data/{H}_{mm}_extent_v4.0.csv
+    workers: 4                     # files downloaded at once
     license: "No constraints on data access or use (NSIDC); cite as below"
     citation: >-
       Meier, W. N. et al. NOAA/NSIDC Climate Data Record of Passive Microwave Sea Ice
