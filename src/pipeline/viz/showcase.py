@@ -322,12 +322,18 @@ def plot_niche_ridgeline(r: dict, out: Path) -> Path:
         q10, q50, q90 = s["sst_quantiles"]
         ax.plot([q50, q50], [i, i + np.interp(q50, mid, h)], color=INK, lw=1.2, zorder=len(sp) + 1)
         ax.text(1.01, i + 0.15, f"median {q50:.0f} °C\n80% within {q10:.0f}–{q90:.0f} °C\nn={s['n_sst']:,}",
-                fontsize=7.5, color=INK_MUTED, ha="left", va="bottom", transform=ax.get_yaxis_transform())
-    ax.set_yticks(np.arange(len(sp)) + 0.3, [common_name(s["species"]) for s in sp])
-    ax.set(xlim=(-2, 32), ylim=(-0.2, len(sp) + 0.6), xlabel="sea surface temperature at the sighting (°C, HadISST monthly, 1° cell)")
+                fontsize=11, color=INK_MUTED, ha="left", va="bottom", linespacing=1.15,
+                transform=ax.get_yaxis_transform())
+    # One word per line keeps the label column narrow ("North Atlantic right" -> three short lines).
+    ax.set_yticks(np.arange(len(sp)) + 0.3, [common_name(s["species"]).replace(" ", "\n") for s in sp],
+                  fontsize=14, linespacing=1.0)
+    ax.tick_params(axis="x", labelsize=13)
+    ax.set_xlim(-2, 32)
+    ax.set_ylim(-0.2, len(sp) + 0.6)
+    ax.set_xlabel("sea surface temperature at the sighting (°C, HadISST monthly, 1° cell)", fontsize=13)
     ax.grid(axis="y", visible=False)
     ax.set_title("Temperature niche: the water each species is seen in (sightings 1998–2025, acoustic excluded)",
-                 fontsize=10)
+                 fontsize=14)
     return save(fig, out / "08_niche_temperature_ridgeline.png")
 
 

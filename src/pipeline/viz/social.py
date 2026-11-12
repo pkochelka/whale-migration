@@ -25,26 +25,105 @@ def region_group(region: str) -> int:
     return len(REGION_GROUPS) - 1
 
 
+def grid_layout(n_nodes: int, edges: list, aspect: float = 16 / 9, pad: float = 1.7) -> np.ndarray:
+    """Lay out each connected group on its own tile and pack the tiles in rows, largest first.
+
+    Inside a group: spring layout, rotated so its long axis is horizontal, scaled so that its area
+    grows with the number of whales. Tiles are packed left to right into rows of a fixed width,
+    chosen so the whole picture fills a canvas of the given aspect ratio. Position carries no
+    geographic meaning; only lines do.
+    """
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_nodes_from(range(n_nodes))
+    G.add_weighted_edges_from((a, b, w) for a, b, w, *_ in edges)
+    comps = sorted(nx.connected_components(G), key=lambda c: (-len(c), min(c)))
+
+    tiles = []                                       # (nodes, local xy, width, height)
+    for k, comp in enumerate(comps):
+        comp = sorted(comp)
+        if len(comp) == 2:
+            p = np.array([[-0.5, 0.0], [0.5, 0.0]])
+        else:
+            pos = nx.kamada_kawai_layout(G.subgraph(comp)) if len(comp) <= 60 else \
+                nx.spring_layout(G.subgraph(comp), weight="weight", seed=k, iterations=200)
+            p = np.array([pos[n] for n in comp])
+            p -= p.mean(0)
+            _, _, vt = np.linalg.svd(p, full_matrices=False)   # rotate: long axis horizontal
+            p = p @ vt.T
+            # Scale so the typical distance between linked whales is ~1 unit in every group.
+            idx = {n: i for i, n in enumerate(comp)}
+            el = [np.linalg.norm(p[idx[a]] - p[idx[b]]) for a, b in G.subgraph(comp).edges()]
+            p /= max(np.median(el), 1e-9)
+        p -= p.min(0)
+        w, h = p.max(0)
+        tiles.append((comp, p, w, h))
+
+    # Skyline packing: the canvas width is split into narrow columns; each tile (largest first)
+    # drops into the horizontal position where it can sit highest, so small groups fill the gaps
+    # beside and below large ones. The width is chosen by trial to match the target aspect.
+    res = 0.25
+
+    def pack(canvas_w):
+        ncols = int(np.ceil(canvas_w / res))
+        sky = np.zeros(ncols)                          # depth already used from the top, per column
+        placed = []
+        for comp, p, w, h in tiles:
+            wc = min(ncols, int(np.ceil((w + pad) / res)))
+            tops = np.lib.stride_tricks.sliding_window_view(sky, wc).max(1)
+            x = int(np.argmin(tops))                   # first (leftmost) of the highest spots
+            top = tops[x]
+            placed.append((comp, p + [x * res, -top - h]))
+            sky[x:x + wc] = top + h + 0.8 * pad
+        used_w = max(q[:, 0].max() for _, q in placed)
+        height = max(-q[:, 1].min() for _, q in placed)
+        return placed, used_w, height
+
+    widest = max(t[2] for t in tiles) + pad
+    best = None
+    for canvas_w in np.linspace(widest, widest * 6, 80):
+        placed, used_w, height = pack(canvas_w)
+        score = abs(np.log((used_w / height) / aspect))
+        if best is None or score < best[0]:
+            best = (score, placed)
+
+    xy = np.zeros((n_nodes, 2))
+    for comp, q in best[1]:
+        xy[comp] = q
+    return xy
+
+
 def plot_network(d: dict, out: Path) -> Path:
     """Each dot is a whale, each line a pair photographed together at least twice."""
     nodes, edges = d["nodes"], d["edges"]           # edge = [node_a, node_b, hwi, times_together, years]
-    xy = np.array([[n["x"], 1 - n["y"]] for n in nodes])
+    fig = plt.figure(figsize=(16, 9))
+    # The axes span the full figure width, with the title above and the legend below.
+    box = [0.005, 0.05, 0.99, 0.86]
+    ax = fig.add_axes(box)
+    xy = grid_layout(len(nodes), edges, aspect=(box[2] * 16) / (box[3] * 9))
     group = np.array([region_group(n["region"]) for n in nodes])
-    size = 4 + 3 * np.sqrt([n["deg"] for n in nodes])
+    deg = np.array([n["deg"] for n in nodes])
+    size = 22 + 10 * np.sqrt(deg)
 
-    fig, ax = plt.subplots(figsize=(10, 7.5))
     lines = [(xy[a], xy[b]) for a, b, *_ in edges]
-    widths = [0.3 + min(1.5, together / 4) for _, _, _, together, _ in edges]
-    ax.add_collection(LineCollection(lines, colors="#55606a", linewidths=widths, alpha=0.35, zorder=1))
+    widths = [1.0 + min(3.0, (together - 2) * 0.6) for _, _, _, together, _ in edges]
+    ax.add_collection(LineCollection(lines, colors="#3d454c", linewidths=widths, alpha=0.55, zorder=1,
+                                     capstyle="round"))
     for k, (label, _, color) in enumerate(REGION_GROUPS):
         m = group == k
-        ax.scatter(xy[m, 0], xy[m, 1], s=size[m], c=color, edgecolors="white", linewidths=0.3, zorder=2,
+        ax.scatter(xy[m, 0], xy[m, 1], s=size[m], c=color, edgecolors="white", linewidths=0.5, zorder=2,
                    label=f"{label} ({m.sum():,})")
     s = d["stats"]
-    ax.set_title("Humpback whales photographed together at least twice\n"
-                 f"{s['nodes']:,} whales, {s['edges']:,} repeated pairs, largest cluster "
-                 f"{s['largest_component']:,} whales (colour = home region; layout is not geographic)")
-    ax.legend(loc="upper left", bbox_to_anchor=(1.0, 0.95), frameon=False, markerscale=1.6, title="Home region")
+    ax.set_title(f"Humpback whales photographed together at least twice: {s['nodes']:,} whales, "
+                 f"{s['edges']:,} repeated pairs, {s['components']:,} separate groups\n"
+                 "Colour = home region (where the whale is photographed most often). Line width = times "
+                 "seen together. Layout is not geographic.", fontsize=14)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=len(REGION_GROUPS), frameon=False,
+              markerscale=1.6, fontsize=13, handletextpad=0.2, columnspacing=1.8)
+    ax.margins(0.005)
+    ax.set_aspect("equal", adjustable="datalim")   # keep the axes box full-size; pad the data range instead
+    ax.autoscale_view()
     ax.set_axis_off()
     return save(fig, out / "social_network.png")
 
