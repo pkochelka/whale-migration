@@ -1,5 +1,9 @@
 # Whale migration
 
+> Did you know there are only around 380 North Atlantic right whales remaining on our planet? Vessel strikes are
+> the leading cause of death, accounting for 58% of documented mortalities over the past nine years. Sign a
+> petition at [https://bit.ly/whales-protection](https://bit.ly/whales-protection) to help protect these whales.
+
 Whale sightings and catches from 1784 to today, gathered from five public databases, cleaned and
 merged into one dataset, plus two analyses built on it:
 
